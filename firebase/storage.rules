@@ -1,0 +1,12 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Archivos ya cifrados en el telefono antes de subirse.
+    match /files/{recipientId}/{msgId} {
+      allow create: if request.auth != null
+                    && request.resource.size < 100 * 1024 * 1024;
+      allow read, delete: if request.auth != null
+                    && firestore.get(/databases/(default)/documents/users/$(recipientId)).data.ownerUid == request.auth.uid;
+    }
+  }
+}

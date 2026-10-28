@@ -1,0 +1,25 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // users/{userId}: enlaza el ID de ENVIO con la cuenta anonima de Firebase que lo creo.
+    match /users/{userId} {
+      allow create: if request.auth != null
+                    && request.resource.data.ownerUid == request.auth.uid;
+      allow read, update: if request.auth != null
+                    && resource.data.ownerUid == request.auth.uid
+                    && request.resource.data.ownerUid == request.auth.uid;
+    }
+
+    // Buzon de entrada: cualquiera con sesion puede dejar un mensaje (ya cifrado);
+    // solo el dueno del buzon puede leerlo y borrarlo.
+    match /inbox/{userId}/messages/{msgId} {
+      allow create: if request.auth != null
+                    && request.resource.data.to == userId
+                    && request.resource.data.keys().hasOnly(
+                         ['id','from','to','ts','type','ct','spk','sname','fref']);
+      allow read, delete: if request.auth != null
+                    && get(/databases/$(database)/documents/users/$(userId)).data.ownerUid == request.auth.uid;
+    }
+  }
+}
