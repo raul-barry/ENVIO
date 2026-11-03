@@ -21,7 +21,8 @@ data class Contact(
 
 /**
  * type: TEXT | IMAGE | AUDIO | FILE
- * status (salientes): PENDING | SENT | FAILED   (entrantes: RECEIVED)
+ * status (salientes): PENDING | SENT (en el servidor, sin confirmar) | DELIVERED | FAILED
+ *                     (entrantes: RECEIVED)
  * channel: NEARBY (directo, sin internet) | INTERNET
  */
 @Entity(tableName = "messages", indices = [Index("contactId")])
@@ -80,6 +81,16 @@ interface MessageDao {
 
     @Query("UPDATE messages SET status = :status, channel = :channel WHERE id = :id")
     suspend fun setStatus(id: String, status: String, channel: String?)
+
+    /** Enviados por internet que todavia no confirmaron entrega (se reintentan). */
+    @Query("SELECT * FROM messages WHERE contactId = :contactId AND outgoing = 1 AND status = 'SENT' AND channel = 'INTERNET' AND ts > :since ORDER BY ts ASC")
+    suspend fun unacked(contactId: String, since: Long): List<Message>
+
+    @Query("SELECT DISTINCT contactId FROM messages WHERE outgoing = 1 AND status = 'SENT' AND channel = 'INTERNET' AND ts > :since")
+    suspend fun unackedContacts(since: Long): List<String>
+
+    @Query("UPDATE messages SET status = 'DELIVERED', channel = 'INTERNET' WHERE id = :id AND contactId = :contactId AND outgoing = 1")
+    suspend fun markDelivered(id: String, contactId: String)
 }
 
 @Database(entities = [Contact::class, Message::class], version = 1, exportSchema = false)

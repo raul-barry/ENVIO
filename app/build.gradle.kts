@@ -5,12 +5,6 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
-// Firebase (modo internet) se activa solo si pones app/google-services.json.
-// Sin ese archivo, ENVIO compila y funciona 100% en modo directo (offline).
-if (file("google-services.json").exists()) {
-    apply(plugin = "com.google.gms.google-services")
-}
-
 android {
     namespace = "com.envio.app"
     compileSdk = 34
@@ -19,13 +13,27 @@ android {
         applicationId = "com.envio.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        // En GitHub el numero de compilacion sube solo, asi cada APK nuevo se instala encima del anterior.
+        val run = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionCode = run
+        versionName = "1.$run"
+    }
+
+    // Firma fija: todos los APK salen firmados con la misma llave y se pueden instalar como
+    // actualizacion sin desinstalar (desinstalar borra tu identidad y tus contactos).
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("envio-debug.keystore")
+            storePassword = "envio123"
+            keyAlias = "envio"
+            keyPassword = "envio123"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -38,6 +46,11 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+    packaging {
+        resources {
+            excludes += setOf("META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*")
+        }
     }
 }
 
@@ -54,17 +67,14 @@ dependencies {
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
 
-    // Modo offline: Bluetooth / BLE / Wi-Fi Direct automático
+    // Modo directo (sin internet): Bluetooth / BLE / Wi-Fi Direct automatico
     implementation("com.google.android.gms:play-services-nearby:19.3.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
+
+    // Modo internet: relevo MQTT, sin cuentas ni configuracion
+    implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
 
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
-
-    // Modo internet
-    implementation(platform("com.google.firebase:firebase-bom:33.3.0"))
-    implementation("com.google.firebase:firebase-auth")
-    implementation("com.google.firebase:firebase-firestore")
-    implementation("com.google.firebase:firebase-storage")
 }

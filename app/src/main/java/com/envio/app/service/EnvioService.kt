@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.envio.app.EnvioApp
@@ -23,13 +24,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Servicio en primer plano: mantiene ENVIO anunciandose y buscando contactos cercanos
- * y reintenta la cola de envio, incluso con la app cerrada.
+ * Servicio en primer plano: mantiene ENVIO anunciandose y buscando contactos cercanos,
+ * conectado al servidor de internet y reintentando la cola de envio, incluso con la app cerrada.
  */
 class EnvioService : Service() {
 
     private var loop: Job? = null
     private var receiverRegistered = false
+    private var wakeLock: PowerManager.WakeLock? = null
 
     private val radioReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
@@ -62,6 +64,18 @@ class EnvioService : Service() {
             return
         }
 
+        // Mantiene la CPU despierta para no perder la busqueda cercana ni la conexion a internet
+        // con la pantalla apagada. Se renueva cada vuelta; si el servicio muere, se libera sola.
+        try {
+            wakeLock = getSystemService(PowerManager::class.java)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "envio:service")
+                .apply {
+                    setReferenceCounted(false)
+                    acquire(5 * 60_000L)
+                }
+        } catch (_: Exception) {
+        }
+
         core.start()
 
         val filter = IntentFilter().apply {
@@ -72,14 +86,12 @@ class EnvioService : Service() {
         receiverRegistered = true
 
         loop = core.scope.launch {
-            var tick = 0
             while (isActive) {
-                delay(20_000L)
-                tick++
+                delay(15_000L)
+                try { wakeLock?.acquire(5 * 60_000L) } catch (_: Exception) {}
+                core.nearby.watchdog()
+                core.online.reconnectNow()
                 core.flush()
-                core.nearby.retryDiscovered()
-                // cada ~10 min sin conexiones: reiniciar la busqueda por si Android la detuvo
-                if (tick % 30 == 0 && core.nearby.connectedPeers.value.isEmpty()) core.nearby.restart()
             }
         }
     }
@@ -93,6 +105,7 @@ class EnvioService : Service() {
         if (receiverRegistered) {
             try { unregisterReceiver(radioReceiver) } catch (_: Exception) {}
         }
+        try { wakeLock?.release() } catch (_: Exception) {}
         super.onDestroy()
     }
 

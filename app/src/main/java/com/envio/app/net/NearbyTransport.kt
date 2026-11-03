@@ -18,6 +18,7 @@ import com.google.android.gms.nearby.connection.Strategy
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
@@ -28,8 +29,12 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Canal sin internet ni SIM. Usa Google Nearby Connections, que elige solo entre
  * Bluetooth, BLE y Wi-Fi Direct segun lo que tengan ambos telefonos.
- * Siempre anuncia y busca; se conecta automaticamente a los contactos conocidos,
+ * Anuncia y busca todo el tiempo; se conecta automaticamente a los contactos conocidos,
  * sin preguntar al usuario, y entrega los mensajes pendientes.
+ *
+ * Android/Nearby pueden detener la busqueda o el anuncio por su cuenta pasado un rato.
+ * Por eso hay un vigilante ([watchdog]) que reinicia ambos cada pocos minutos mientras falte
+ * algun contacto por conectar, descarta conexiones muertas y reintenta las que se atoran.
  */
 class NearbyTransport(private val ctx: Context, private val scope: CoroutineScope) {
 
@@ -40,6 +45,7 @@ class NearbyTransport(private val ctx: Context, private val scope: CoroutineScop
 
     var listener: Listener? = null
     var isKnownContact: (String) -> Boolean = { false }
+    var knownContacts: () -> Set<String> = { emptySet() }
 
     val connectedPeers = MutableStateFlow<Set<String>>(emptySet())
     val status = MutableStateFlow("Iniciando...")
@@ -48,14 +54,16 @@ class NearbyTransport(private val ctx: Context, private val scope: CoroutineScop
     private val serviceId = "com.envio.app.v1"
     private val strategy = Strategy.P2P_CLUSTER
 
-    private var myId = ""
-    private var advOk = false
-    private var discOk = false
-    private var err: String? = null
+    @Volatile private var myId = ""
+    @Volatile private var advOk = false
+    @Volatile private var discOk = false
+    @Volatile private var err: String? = null
+    @Volatile private var lastCycle = 0L
+    @Volatile private var restarting = false
 
     private val endpointToPeer = ConcurrentHashMap<String, String>()
     private val peerToEndpoint = ConcurrentHashMap<String, String>()
-    private val connecting = ConcurrentHashMap.newKeySet<String>()
+    private val connecting = ConcurrentHashMap<String, Long>()
     private val discovered = ConcurrentHashMap<String, String>()
 
     private val sendWaiters = ConcurrentHashMap<Long, CompletableDeferred<Boolean>>()
@@ -71,15 +79,21 @@ class NearbyTransport(private val ctx: Context, private val scope: CoroutineScop
         return if (Regex("^[A-Z2-9]{10}$").matches(id)) id else null
     }
 
-    // ---------- Inicio / reinicio ----------
+    // ---------- Inicio / reinicio / vigilante ----------
 
     fun start(id: String) {
         myId = id
+        startBoth()
+    }
+
+    private fun startBoth() {
+        if (myId.isEmpty()) return
+        lastCycle = System.currentTimeMillis()
         client.startAdvertising(
-            "ENVIO|$id", serviceId, connCb,
+            "ENVIO|$myId", serviceId, connCb,
             AdvertisingOptions.Builder().setStrategy(strategy).build()
         ).addOnSuccessListener {
-            advOk = true; refreshStatus()
+            advOk = true; err = null; refreshStatus()
         }.addOnFailureListener { e ->
             if ((e as? ApiException)?.statusCode == ConnectionsStatusCodes.STATUS_ALREADY_ADVERTISING) {
                 advOk = true
@@ -92,7 +106,7 @@ class NearbyTransport(private val ctx: Context, private val scope: CoroutineScop
             serviceId, discCb,
             DiscoveryOptions.Builder().setStrategy(strategy).build()
         ).addOnSuccessListener {
-            discOk = true; refreshStatus()
+            discOk = true; err = null; refreshStatus()
         }.addOnFailureListener { e ->
             if ((e as? ApiException)?.statusCode == ConnectionsStatusCodes.STATUS_ALREADY_DISCOVERING) {
                 discOk = true
@@ -103,26 +117,47 @@ class NearbyTransport(private val ctx: Context, private val scope: CoroutineScop
         }
     }
 
-    /** Reinicia anuncio y busqueda (por ejemplo al encender Bluetooth/Wi-Fi). Mantiene las conexiones. */
+    /** Reinicia anuncio y busqueda. NO corta las conexiones que ya existen. */
     fun restart() {
-        if (myId.isEmpty()) return
+        if (myId.isEmpty() || restarting) return
+        restarting = true
         try {
             client.stopAdvertising()
             client.stopDiscovery()
         } catch (_: Exception) {
         }
-        advOk = false; discOk = false; err = null
+        advOk = false; discOk = false
         discovered.clear(); connecting.clear()
-        start(myId)
+        scope.launch {
+            delay(800)
+            restarting = false
+            startBoth()
+        }
+    }
+
+    /** Lo llama el servicio cada ~15 s. */
+    fun watchdog() {
+        if (myId.isEmpty() || restarting) return
+        val now = System.currentTimeMillis()
+        val known = knownContacts()
+        val missing = known.isEmpty() || known.any { !peerToEndpoint.containsKey(it) }
+        val failed = !advOk || !discOk
+        if (failed && now - lastCycle > 15_000L) {
+            restart(); return
+        }
+        if (missing && now - lastCycle > CYCLE_MS) {
+            restart(); return
+        }
+        contactsChanged()
     }
 
     private fun refreshStatus() {
         val n = peerToEndpoint.size
         status.value = when {
-            advOk && discOk && n > 0 -> "Conexion directa con $n contacto(s) cercano(s)"
-            advOk && discOk -> "Buscando contactos cercanos..."
-            err != null -> "Busqueda cercana inactiva: $err"
-            else -> "Iniciando..."
+            n > 0 -> "Cercanos: conexion directa con $n contacto(s)"
+            advOk && discOk -> "Cercanos: buscando contactos..."
+            err != null -> "Cercanos: inactivo ($err). Reintentando..."
+            else -> "Cercanos: iniciando..."
         }
     }
 
@@ -136,6 +171,7 @@ class NearbyTransport(private val ctx: Context, private val scope: CoroutineScop
     private val discCb = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             val peer = parsePeer(info.endpointName) ?: return
+            if (peer == myId) return
             discovered[endpointId] = peer
             maybeConnect(endpointId, peer)
         }
@@ -146,14 +182,24 @@ class NearbyTransport(private val ctx: Context, private val scope: CoroutineScop
     }
 
     private fun maybeConnect(endpointId: String, peer: String) {
-        if (!isKnownContact(peer)) return
-        if (peerToEndpoint.containsKey(peer)) return
-        if (!connecting.add(endpointId)) return
-        client.requestConnection("ENVIO|$myId", endpointId, connCb)
-            .addOnFailureListener { connecting.remove(endpointId) }
+        if (!isKnownContact(peer) || peerToEndpoint.containsKey(peer)) return
+        val now = System.currentTimeMillis()
+        val prev = connecting[endpointId]
+        if (prev != null && now - prev < 25_000L) return // ya hay un intento en curso
+        connecting[endpointId] = now
+        // Para que los dos telefonos no se llamen a la vez: el de ID menor llama primero.
+        val wait = if (myId < peer) 0L else 4_000L
+        scope.launch {
+            if (wait > 0) delay(wait)
+            if (peerToEndpoint.containsKey(peer) || !discovered.containsKey(endpointId)) {
+                connecting.remove(endpointId); return@launch
+            }
+            client.requestConnection("ENVIO|$myId", endpointId, connCb)
+                .addOnFailureListener { connecting.remove(endpointId) }
+        }
     }
 
-    /** Llamar cuando cambia la lista de contactos o periodicamente para reintentar. */
+    /** Intenta conectar con todo lo ya descubierto (por ejemplo tras agregar un contacto). */
     fun contactsChanged() {
         discovered.forEach { (ep, peer) -> maybeConnect(ep, peer) }
     }
@@ -185,10 +231,22 @@ class NearbyTransport(private val ctx: Context, private val scope: CoroutineScop
         }
 
         override fun onDisconnected(endpointId: String) {
+            connecting.remove(endpointId)
             val peer = endpointToPeer.remove(endpointId)
             if (peer != null && peerToEndpoint[peer] == endpointId) peerToEndpoint.remove(peer)
             publish()
+            lastCycle = 0L // el vigilante reinicia la busqueda en su proxima vuelta
         }
+    }
+
+    /** Conexion que dejo de responder: se cierra para que se vuelva a descubrir y reconectar. */
+    private fun dropPeer(peerId: String) {
+        val ep = peerToEndpoint.remove(peerId) ?: return
+        endpointToPeer.remove(ep)
+        connecting.remove(ep)
+        try { client.disconnectFromEndpoint(ep) } catch (_: Exception) {}
+        publish()
+        lastCycle = 0L
     }
 
     // ---------- Recepcion ----------
@@ -265,7 +323,7 @@ class NearbyTransport(private val ctx: Context, private val scope: CoroutineScop
     suspend fun send(peerId: String, env: Envelope, encFile: File?): Boolean {
         val ep = peerToEndpoint[peerId] ?: return false
         val ids = mutableListOf<Long>()
-        return try {
+        val ok = try {
             var out = env
             var filePayload: Payload? = null
             if (encFile != null) {
@@ -290,5 +348,12 @@ class NearbyTransport(private val ctx: Context, private val scope: CoroutineScop
         } finally {
             ids.forEach { sendWaiters.remove(it) }
         }
+        if (!ok) dropPeer(peerId)
+        return ok
+    }
+
+    companion object {
+        /** Cada cuanto se reinicia la busqueda mientras falte algun contacto por conectar. */
+        private const val CYCLE_MS = 120_000L
     }
 }

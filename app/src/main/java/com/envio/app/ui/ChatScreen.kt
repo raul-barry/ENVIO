@@ -53,6 +53,7 @@ import coil.compose.AsyncImage
 import com.envio.app.core
 import com.envio.app.data.Contact
 import com.envio.app.data.Message
+import com.envio.app.net.OnlineTransport
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -232,14 +233,17 @@ private fun Bubble(m: Message) {
                         append("  ")
                         append(
                             when {
-                                m.status == "PENDING" -> "Pendiente"
                                 m.status == "FAILED" -> "Error"
-                                m.channel == "NEARBY" -> "Enviado directo"
-                                else -> "Enviado por internet"
+                                m.status == "PENDING" && m.size > OnlineTransport.MAX_FILE_BYTES ->
+                                    "Pendiente (archivo grande: sale al estar cerca)"
+                                m.status == "PENDING" -> "Pendiente"
+                                m.status == "SENT" -> "Enviado"
+                                m.channel == "NEARBY" -> "Entregado (directo)"
+                                else -> "Entregado"
                             }
                         )
-                    } else if (m.channel == "NEARBY") {
-                        append("  Directo")
+                    } else {
+                        append(if (m.channel == "NEARBY") "  Directo" else "  Internet")
                     }
                 }
                 Text(

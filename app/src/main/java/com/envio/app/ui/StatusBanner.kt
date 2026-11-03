@@ -2,6 +2,8 @@ package com.envio.app.ui
 
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -31,7 +33,8 @@ import com.envio.app.service.EnvioService
 import kotlinx.coroutines.delay
 
 /**
- * Avisa cuando falta un permiso o esta apagado Bluetooth / Wi-Fi / Ubicacion.
+ * Avisa cuando falta un permiso o esta apagado Bluetooth / Wi-Fi / Ubicacion, y muestra el
+ * estado real de los dos canales (cercano e internet).
  * Android no deja que una app los encienda en silencio: se activan con un toque.
  */
 @Composable
@@ -49,7 +52,15 @@ fun StatusBanner() {
     val bt = remember(tick) { Radios.bluetoothOn(ctx) }
     val wifi = remember(tick) { Radios.wifiOn(ctx) }
     val loc = remember(tick) { !Radios.needsLocation() || Radios.locationOn(ctx) }
-    val status by core.nearby.status.collectAsState()
+    val batteryOk = remember(tick) {
+        try {
+            ctx.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(ctx.packageName)
+        } catch (e: Exception) {
+            true
+        }
+    }
+    val nearbyStatus by core.nearby.status.collectAsState()
+    val onlineStatus by core.online.status.collectAsState()
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -76,12 +87,31 @@ fun StatusBanner() {
             if (!loc) Banner("Ubicacion apagada (Android la exige para buscar cerca).", "Activar") {
                 ctx.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
             }
+            if (!batteryOk) Banner(
+                "Para seguir conectado con la pantalla apagada, permite que ENVIO ignore el ahorro de bateria.",
+                "Permitir"
+            ) {
+                try {
+                    ctx.startActivity(
+                        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                            .setData(Uri.parse("package:${ctx.packageName}"))
+                    )
+                } catch (_: Exception) {
+                    ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                }
+            }
         }
         Text(
-            status,
+            nearbyStatus,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+        )
+        Text(
+            onlineStatus,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
         )
     }
 }

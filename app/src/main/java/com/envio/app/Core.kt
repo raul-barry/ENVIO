@@ -29,8 +29,9 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Centro de la app. El usuario siempre toca "enviar" igual:
  * el mensaje se guarda como PENDIENTE y la cola lo manda por el mejor canal disponible:
- *   1) conexion directa (Bluetooth / Wi-Fi Direct) si el contacto esta cerca
- *   2) internet si hay conexion
+ *   1) conexion directa (Bluetooth / Wi-Fi Direct) si el contacto esta cerca -> ENTREGADO
+ *   2) internet si hay conexion -> ENVIADO, y pasa a ENTREGADO cuando el contacto confirma;
+ *      mientras no confirme, se reintenta con espera creciente (hasta 7 dias)
  *   3) si ninguno esta disponible, espera y sale solo cuando aparezca uno.
  */
 class Core(val app: Application) {
@@ -51,10 +52,13 @@ class Core(val app: Application) {
     @Volatile
     private var knownIds: Set<String> = emptySet()
     private val locks = ConcurrentHashMap<String, Mutex>()
+    /** id del mensaje -> [intentos, ultimo intento en ms]. Solo en memoria: al reiniciar se reintenta. */
+    private val retryState = ConcurrentHashMap<String, LongArray>()
     private var started = false
 
     init {
         nearby.isKnownContact = { it in knownIds }
+        nearby.knownContacts = { knownIds }
         nearby.listener = object : NearbyTransport.Listener {
             override fun onPeerConnected(peerId: String) = flush(peerId)
             override fun onIncoming(env: Envelope, encFile: File?) {
@@ -68,6 +72,9 @@ class Core(val app: Application) {
             }
         }
         online.onEnvelope = { env, f -> handleIncoming(env, f, "INTERNET") }
+        online.ackBuilder = { env -> buildAck(env) }
+        online.onAck = { env -> handleAck(env) }
+        online.onConnected = { flush() }
         scope.launch {
             db.contactDao().observeAll().collect { list ->
                 knownIds = list.map { it.id }.toSet()
@@ -81,6 +88,7 @@ class Core(val app: Application) {
     fun start() {
         if (!identity.isSetup) return
         nearby.start(identity.id)
+        online.start(scope) { net.isOnline() }
         if (!started) {
             started = true
             net.start { onNetworkChange() }
@@ -90,12 +98,8 @@ class Core(val app: Application) {
     }
 
     private fun onNetworkChange() {
-        scope.launch {
-            if (net.isOnline() && online.available) {
-                if (online.ensureRegistered()) online.startListening(scope)
-                flush()
-            }
-        }
+        online.reconnectNow()
+        flush()
     }
 
     // ---------- Contactos ----------
@@ -180,7 +184,12 @@ class Core(val app: Application) {
 
     fun flush(only: String? = null) {
         scope.launch {
-            val ids = if (only != null) listOf(only) else db.messageDao().pendingContacts()
+            val since = System.currentTimeMillis() - MAX_RETRY_MS
+            val ids = if (only != null) {
+                listOf(only)
+            } else {
+                (db.messageDao().pendingContacts() + db.messageDao().unackedContacts(since)).distinct()
+            }
             ids.forEach { cid ->
                 launch { locks.getOrPut(cid) { Mutex() }.withLock { sendPending(cid) } }
             }
@@ -189,10 +198,14 @@ class Core(val app: Application) {
 
     private suspend fun sendPending(cid: String) {
         val contact = db.contactDao().get(cid) ?: return
+
+        // 1) mensajes nuevos
         for (m in db.messageDao().pendingFor(cid)) {
             val viaNearby = nearby.isConnected(cid)
-            val viaNet = online.available && net.isOnline()
-            if (!viaNearby && !viaNet) return
+            val viaNet = net.isOnline() && online.isReady()
+            if (!viaNearby && !viaNet) break
+            val tooBigForNet = m.size > OnlineTransport.MAX_FILE_BYTES
+            if (!viaNearby && tooBigForNet) continue // los archivos enormes esperan a estar cerca
             val built = try {
                 build(m, contact)
             } catch (e: Exception) {
@@ -200,16 +213,49 @@ class Core(val app: Application) {
                 continue
             }
             val (env, enc) = built
-            var channel: String? = null
+            var done = false
             try {
-                if (viaNearby && nearby.send(cid, env, enc)) channel = "NEARBY"
-                if (channel == null && viaNet && online.send(env, enc)) channel = "INTERNET"
+                if (viaNearby && nearby.send(cid, env, enc)) {
+                    db.messageDao().setStatus(m.id, "DELIVERED", "NEARBY")
+                    done = true
+                }
+                if (!done && viaNet && !tooBigForNet && online.send(env, enc)) {
+                    db.messageDao().setStatus(m.id, "SENT", "INTERNET")
+                    retryState[m.id] = longArrayOf(1L, System.currentTimeMillis())
+                    done = true
+                }
             } finally {
                 enc?.delete()
             }
-            if (channel == null) return
-            db.messageDao().setStatus(m.id, "SENT", channel)
+            if (!done) break
         }
+
+        // 2) enviados por internet que aun no confirmaron: reintentar
+        retryUnacked(cid, contact)
+    }
+
+    private suspend fun retryUnacked(cid: String, contact: Contact) {
+        if (!(net.isOnline() && online.isReady())) return
+        val now = System.currentTimeMillis()
+        for (m in db.messageDao().unacked(cid, now - MAX_RETRY_MS)) {
+            val st = retryState.getOrPut(m.id) { longArrayOf(0L, 0L) }
+            if (now < st[1] + backoff(st[0].toInt(), m.size)) continue
+            val built = try { build(m, contact) } catch (e: Exception) { continue }
+            val (env, enc) = built
+            try {
+                online.send(env, enc)
+            } finally {
+                enc?.delete()
+            }
+            st[0] = st[0] + 1
+            st[1] = System.currentTimeMillis()
+        }
+    }
+
+    private fun backoff(attempts: Int, size: Long): Long {
+        if (attempts <= 0) return 0L
+        val base = if (size > 1_000_000L) 300_000L else 45_000L
+        return minOf(base shl minOf(attempts - 1, 10), 6L * 3600_000L)
     }
 
     private fun build(m: Message, contact: Contact): Pair<Envelope, File?> {
@@ -238,6 +284,33 @@ class Core(val app: Application) {
             ct = Crypto.b64(ct), spk = identity.publicKeyB64, sname = identity.name
         )
         return env to enc
+    }
+
+    // ---------- Confirmaciones de entrega (solo canal internet) ----------
+
+    /** Confirmacion cifrada: solo quien tiene la clave compartida puede fabricarla. */
+    suspend fun buildAck(env: Envelope): Envelope? {
+        if (db.messageDao().exists(env.id) == 0) return null
+        val c = db.contactDao().get(env.from) ?: return null
+        val shared = Crypto.sharedKey(identity.privateKey(), Crypto.decodePublic(c.publicKey))
+        val ct = Crypto.encrypt(shared, "ack:${env.id}".toByteArray(Charsets.UTF_8))
+        return Envelope(
+            id = env.id, from = identity.id, to = env.from, ts = System.currentTimeMillis(),
+            type = "ACK", ct = Crypto.b64(ct), spk = identity.publicKeyB64, sname = identity.name
+        )
+    }
+
+    suspend fun handleAck(env: Envelope) {
+        val c = db.contactDao().get(env.from) ?: return
+        try {
+            val shared = Crypto.sharedKey(identity.privateKey(), Crypto.decodePublic(c.publicKey))
+            val plain = String(Crypto.decrypt(shared, Crypto.unb64(env.ct)), Charsets.UTF_8)
+            if (plain != "ack:${env.id}") return
+        } catch (e: Exception) {
+            return
+        }
+        db.messageDao().markDelivered(env.id, env.from)
+        retryState.remove(env.id)
     }
 
     // ---------- Recibir ----------
@@ -310,4 +383,8 @@ class Core(val app: Application) {
 
     private fun sanitize(name: String): String =
         name.replace(Regex("[^A-Za-z0-9._ -]"), "_").take(80)
+
+    companion object {
+        private const val MAX_RETRY_MS = 7L * 24 * 3600_000L
+    }
 }
