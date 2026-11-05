@@ -1,6 +1,7 @@
 package com.envio.app.ui
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,6 +23,8 @@ import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Switch
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -77,7 +80,7 @@ private fun stamp(ts: Long): String {
     return if (System.currentTimeMillis() - ts < day) timeFmt.format(Date(ts)) else dateFmt.format(Date(ts))
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatsScreen(
     onOpen: (String) -> Unit,
@@ -103,6 +106,7 @@ fun ChatsScreen(
     var searching by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
+    var toDelete by remember { mutableStateOf<Contact?>(null) }
 
     val sorted = contacts
         .filter { query.isBlank() || it.name.contains(query, ignoreCase = true) }
@@ -151,6 +155,22 @@ fun ChatsScreen(
             }
         }
     ) { pad ->
+        toDelete?.let { ct ->
+            AlertDialog(
+                onDismissRequest = { toDelete = null },
+                title = { Text("Eliminar chat con ${ct.name}") },
+                text = { Text("Vaciar borra los mensajes y archivos de este telefono y deja el contacto. Eliminar tambien quita el contacto: para volver a hablar hay que escanear su QR otra vez. La otra persona conserva su copia.") },
+                confirmButton = {
+                    TextButton(onClick = { core.deleteChat(ct.id, true); toDelete = null }) { Text("Eliminar chat y contacto") }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = { core.deleteChat(ct.id, false); toDelete = null }) { Text("Solo vaciar") }
+                        TextButton(onClick = { toDelete = null }) { Text("Cancelar") }
+                    }
+                }
+            )
+        }
         Column(Modifier.padding(pad).fillMaxSize()) {
             StatusBanner()
             ModeStrip()
@@ -170,7 +190,7 @@ fun ChatsScreen(
                         val n = unreadMap[ct.id] ?: 0
                         Row(
                             Modifier.fillMaxWidth().height(Dim.chatRow)
-                                .clickable { onOpen(ct.id) }
+                                .combinedClickable(onClick = { onOpen(ct.id) }, onLongClick = { toDelete = ct })
                                 .padding(horizontal = Space.s5),
                             verticalAlignment = Alignment.CenterVertically
                         ) {

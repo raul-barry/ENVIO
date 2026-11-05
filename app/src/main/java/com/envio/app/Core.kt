@@ -235,6 +235,17 @@ class Core(val app: Application) {
 
     // ---------- Acciones sobre mensajes ----------
 
+    /** Borra todos los mensajes (y sus archivos) de un chat. Con [removeContact] tambien quita el contacto. */
+    fun deleteChat(contactId: String, removeContact: Boolean) {
+        scope.launch {
+            db.messageDao().filePaths(contactId).forEach { runCatching { File(it).delete() } }
+            db.messageDao().deleteChat(contactId)
+            db.controlDao().deleteFor(contactId)
+            if (removeContact) db.contactDao().delete(contactId)
+            Notifier.cancel(app, contactId)
+        }
+    }
+
     fun setStarred(ids: List<String>, starred: Boolean) {
         scope.launch { ids.chunked(500).forEach { db.messageDao().setStarred(it, starred) } }
     }

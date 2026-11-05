@@ -83,6 +83,9 @@ interface ContactDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(c: Contact)
 
+    @Query("DELETE FROM contacts WHERE id = :id")
+    suspend fun delete(id: String)
+
     @Query("UPDATE contacts SET isNew = 0 WHERE id = :id")
     suspend fun markSeen(id: String)
 }
@@ -158,6 +161,12 @@ interface MessageDao {
     @Query("UPDATE messages SET starred = :starred WHERE id IN (:ids)")
     suspend fun setStarred(ids: List<String>, starred: Boolean)
 
+    @Query("SELECT filePath FROM messages WHERE contactId = :contactId AND filePath IS NOT NULL")
+    suspend fun filePaths(contactId: String): List<String>
+
+    @Query("DELETE FROM messages WHERE contactId = :contactId")
+    suspend fun deleteChat(contactId: String)
+
     @Query("DELETE FROM messages WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<String>)
 }
@@ -184,6 +193,9 @@ interface ControlDao {
 
     @Query("UPDATE control_queue SET status = 'DELIVERED' WHERE id = :id AND toId = :toId AND status IN ('PENDING','SENT')")
     suspend fun markDelivered(id: String, toId: String)
+
+    @Query("DELETE FROM control_queue WHERE toId = :toId")
+    suspend fun deleteFor(toId: String)
 
     @Query("DELETE FROM control_queue WHERE status IN ('DELIVERED','FAILED') AND ts < :before")
     suspend fun purge(before: Long)
