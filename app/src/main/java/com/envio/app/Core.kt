@@ -190,7 +190,7 @@ class Core(val app: Application) {
     }
 
     /** Envia cualquier archivo elegido por el usuario (imagen, audio, documento...). */
-    suspend fun sendFile(contactId: String, uri: Uri) = withContext(Dispatchers.IO) {
+    suspend fun sendFile(contactId: String, uri: Uri, caption: String? = null) = withContext(Dispatchers.IO) {
         val cr = app.contentResolver
         val mime = cr.getType(uri) ?: "application/octet-stream"
         var name = "archivo"
@@ -204,7 +204,7 @@ class Core(val app: Application) {
         val dest = File(mediaDir, "${id}_${sanitize(name)}")
         val input = cr.openInputStream(uri) ?: return@withContext
         input.use { i -> dest.outputStream().use { i.copyTo(it) } }
-        enqueueFile(contactId, id, dest, name, mime)
+        enqueueFile(contactId, id, dest, name, mime, caption)
     }
 
     /** Envia un archivo que ya esta en el telefono (por ejemplo una nota de voz grabada). */
@@ -217,7 +217,7 @@ class Core(val app: Application) {
             enqueueFile(contactId, id, dest, name, mime)
         }
 
-    private suspend fun enqueueFile(contactId: String, id: String, file: File, name: String, mime: String) {
+    private suspend fun enqueueFile(contactId: String, id: String, file: File, name: String, mime: String, caption: String? = null) {
         val type = when {
             mime.startsWith("image/") -> "IMAGE"
             mime.startsWith("audio/") -> "AUDIO"
@@ -225,7 +225,7 @@ class Core(val app: Application) {
         }
         db.messageDao().insert(
             Message(
-                id = id, contactId = contactId, outgoing = true, type = type, text = null,
+                id = id, contactId = contactId, outgoing = true, type = type, text = caption?.trim()?.take(1000)?.ifBlank { null },
                 fileName = name, mime = mime, filePath = file.absolutePath, size = file.length(),
                 ts = System.currentTimeMillis(), status = "PENDING", channel = null
             )
@@ -315,8 +315,8 @@ class Core(val app: Application) {
 
         // 1) mensajes nuevos
         for (m in db.messageDao().pendingFor(cid)) {
-            val viaNearby = nearby.isConnected(cid)
-            val viaNet = net.isOnline() && online.isReady()
+            val viaNearby = settings.mode == "direct" && nearby.isConnected(cid)
+            val viaNet = settings.mode == "internet" && net.isOnline() && online.isReady()
             if (!viaNearby && !viaNet) break
             val tooBigForNet = m.size > OnlineTransport.MAX_FILE_BYTES
             if (!viaNearby && tooBigForNet) continue // los archivos enormes esperan a estar cerca
@@ -349,7 +349,7 @@ class Core(val app: Application) {
     }
 
     private suspend fun retryUnacked(cid: String, contact: Contact) {
-        if (!(net.isOnline() && online.isReady())) return
+        if (!(settings.mode == "internet" && net.isOnline() && online.isReady())) return
         val now = System.currentTimeMillis()
         for (m in db.messageDao().unacked(cid, now - MAX_RETRY_MS)) {
             val st = retryState.getOrPut(m.id) { longArrayOf(0L, 0L) }
@@ -369,8 +369,8 @@ class Core(val app: Application) {
     /** Mensajes de control: mismo camino que los mensajes, sin archivos. */
     private suspend fun sendControl(cid: String, contact: Contact) {
         for (c in db.controlDao().pendingFor(cid)) {
-            val viaNearby = nearby.isConnected(cid)
-            val viaNet = net.isOnline() && online.isReady()
+            val viaNearby = settings.mode == "direct" && nearby.isConnected(cid)
+            val viaNet = settings.mode == "internet" && net.isOnline() && online.isReady()
             if (!viaNearby && !viaNet) return
             val env = try {
                 buildControl(c, contact)
@@ -389,7 +389,7 @@ class Core(val app: Application) {
             }
             return
         }
-        if (!(net.isOnline() && online.isReady())) return
+        if (!(settings.mode == "internet" && net.isOnline() && online.isReady())) return
         val now = System.currentTimeMillis()
         for (c in db.controlDao().unackedFor(cid, now - MAX_RETRY_MS)) {
             val st = retryState.getOrPut(c.id) { longArrayOf(0L, 0L) }
@@ -534,6 +534,7 @@ class Core(val app: Application) {
             }
             filePath = dest.absolutePath
             size = dest.length()
+            text = body.optString("text").takeIf { it.isNotBlank() }?.take(1000)
         }
 
         val replyToId = body.optString("replyTo").takeIf { it.isNotBlank() && ID_REGEX.matches(it) }

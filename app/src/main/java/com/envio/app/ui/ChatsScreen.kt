@@ -16,7 +16,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.Switch
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.DropdownMenu
@@ -64,7 +67,7 @@ private val dateFmt = SimpleDateFormat("dd/MM/yy", Locale.getDefault())
 fun previewOf(m: Message?): String = when (m?.type) {
     null -> "Toca para escribir"
     "TEXT" -> m.text ?: ""
-    "IMAGE" -> "Imagen"
+    "IMAGE" -> if (m.text.isNullOrBlank()) "Imagen" else "Imagen: ${m.text}"
     "AUDIO" -> "Audio"
     else -> "Archivo: ${m.fileName ?: ""}"
 }
@@ -150,6 +153,7 @@ fun ChatsScreen(
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
             StatusBanner()
+            ModeStrip()
             if (sorted.isEmpty()) {
                 Box(Modifier.fillMaxSize().padding(Space.s7), contentAlignment = Alignment.Center) {
                     Text(
@@ -203,5 +207,43 @@ fun ChatsScreen(
                 }
             }
         }
+    }
+}
+
+/** Interruptor Internet (Wi-Fi) <-> Directo (Bluetooth). El icono activo se pinta con el color de acento. */
+@Composable
+fun ModeStrip() {
+    val core = LocalContext.current.core
+    val c = envioColors
+    val direct = core.settings.mode == "direct"
+    val peers by core.nearby.connectedPeers.collectAsState()
+    val onlineText by core.online.status.collectAsState()
+    val up = if (direct) peers.isNotEmpty() else onlineText.startsWith("Internet: conectado")
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = Space.s5, vertical = Space.s2),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Default.Wifi, contentDescription = "Modo internet",
+            tint = if (!direct) c.accent else c.textMuted
+        )
+        Switch(
+            checked = direct,
+            onCheckedChange = { core.settings.updateMode(if (it) "direct" else "internet"); core.flush() },
+            modifier = Modifier.padding(horizontal = Space.s3)
+        )
+        Icon(
+            Icons.Default.Bluetooth, contentDescription = "Modo directo",
+            tint = if (direct) c.accent else c.textMuted
+        )
+        Text(
+            when {
+                up && direct -> "  contacto cerca"
+                up -> "  conectado"
+                direct -> "  buscando cerca..."
+                else -> "  sin internet"
+            },
+            style = Txt.xs, color = if (up) c.accent else c.textMuted
+        )
     }
 }

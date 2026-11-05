@@ -145,6 +145,14 @@ fun ChatBubble(
                             color = c.text
                         )
                     }
+                    if (m.type != "TEXT" && !m.text.isNullOrBlank()) {
+                        Text(
+                            m.text,
+                            style = Txt.base.copy(fontSize = textSize),
+                            color = c.text,
+                            modifier = Modifier.padding(top = Space.s2)
+                        )
+                    }
                     Row(
                         Modifier.align(Alignment.End).padding(top = Space.s1),
                         verticalAlignment = Alignment.CenterVertically

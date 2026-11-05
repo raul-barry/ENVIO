@@ -117,6 +117,17 @@ fun SettingsHome(onBack: () -> Unit, onNav: (String) -> Unit) {
         NavRow("Notificaciones", "Avisos de mensajes nuevos") { onNav("settings/notifications") }
         NavRow("Privacidad", "Confirmacion de lectura") { onNav("settings/privacy") }
         NavRow("Almacenamiento", "Espacio usado y limpieza") { onNav("settings/storage") }
+        val ctx = LocalContext.current
+        NavRow("Bateria", "Permitir que ENVIO siga conectado con la pantalla apagada") {
+            try {
+                ctx.startActivity(
+                    android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                        .setData(Uri.parse("package:${ctx.packageName}"))
+                )
+            } catch (_: Exception) {
+                ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            }
+        }
     }
 }
 

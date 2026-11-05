@@ -72,47 +72,25 @@ fun StatusBanner() {
         ActivityResultContracts.StartActivityForResult()
     ) { tick++ }
 
+    // Los avisos de radios solo importan en modo directo; en modo internet no se muestra nada.
     Column {
-        if (!permsOk) {
-            Banner("Faltan permisos para enviar sin internet.", "Dar permisos") {
-                permLauncher.launch(Perms.all().toTypedArray())
-            }
-        } else {
-            if (!bt) Banner("Bluetooth apagado: no podras enviar ni recibir directo.", "Activar") {
-                btLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-            }
-            if (!wifi) Banner("Wi-Fi apagado: se necesita para archivos grandes sin internet.", "Activar") {
-                Radios.openWifi(ctx)
-            }
-            if (!loc) Banner("Ubicacion apagada (Android la exige para buscar cerca).", "Activar") {
-                ctx.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
-            }
-            if (!batteryOk) Banner(
-                "Para seguir conectado con la pantalla apagada, permite que ENVIO ignore el ahorro de bateria.",
-                "Permitir"
-            ) {
-                try {
-                    ctx.startActivity(
-                        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                            .setData(Uri.parse("package:${ctx.packageName}"))
-                    )
-                } catch (_: Exception) {
-                    ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        if (core.settings.mode == "direct") {
+            if (!permsOk) {
+                Banner("Faltan permisos para enviar sin internet.", "Dar permisos") {
+                    permLauncher.launch(Perms.all().toTypedArray())
+                }
+            } else {
+                if (!bt) Banner("Bluetooth apagado: no podras enviar ni recibir directo.", "Activar") {
+                    btLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                }
+                if (!wifi) Banner("Wi-Fi apagado: se necesita para archivos grandes sin internet.", "Activar") {
+                    Radios.openWifi(ctx)
+                }
+                if (!loc) Banner("Ubicacion apagada (Android la exige para buscar cerca).", "Activar") {
+                    ctx.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
                 }
             }
         }
-        Text(
-            nearbyStatus,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
-        )
-        Text(
-            onlineStatus,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
-        )
     }
 }
 

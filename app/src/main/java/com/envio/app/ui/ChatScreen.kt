@@ -30,6 +30,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -65,6 +67,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -161,8 +164,9 @@ fun ChatScreen(contactId: String, onBack: () -> Unit) {
     }
     BackHandler(enabled = selecting) { selected.clear() }
 
-    val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) scope.launch { core.sendFile(contactId, uri) }
+    var pending by remember { mutableStateOf<List<android.net.Uri>>(emptyList()) }
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        if (uris.isNotEmpty()) pending = uris.take(30)
     }
     val micPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) recording = recorder.start()
@@ -190,11 +194,13 @@ fun ChatScreen(contactId: String, onBack: () -> Unit) {
 
     val selMessages = messages.filter { it.id in selected }
     val allStarred = selMessages.isNotEmpty() && selMessages.all { it.starred }
-    val direct = contactId in peers
+    val directMode = core.settings.mode == "direct"
+    val linked = if (directMode) contactId in peers else onlineUp
     val subtitle = when {
-        direct -> "cerca - conexion directa"
-        onlineUp -> "por internet"
-        else -> "sin conexion: se enviara al reconectar"
+        linked && directMode -> "cerca"
+        linked -> "conectado"
+        directMode -> "buscando cerca..."
+        else -> "sin internet: se enviara al reconectar"
     }
 
     Scaffold(
@@ -241,7 +247,15 @@ fun ChatScreen(contactId: String, onBack: () -> Unit) {
                             Avatar(contactId, contact?.name ?: "", Dim.avatarHeader, photoPath = contact?.photoPath)
                             Column(Modifier.padding(start = Space.s4)) {
                                 Text(contact?.name ?: "", style = Txt.base, maxLines = 1)
-                                Text(subtitle, style = Txt.meta, color = c.textMuted, maxLines = 1)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        if (directMode) Icons.Default.Bluetooth else Icons.Default.Wifi,
+                                        contentDescription = if (directMode) "Modo directo" else "Modo internet",
+                                        tint = if (linked) c.accent else c.textMuted,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Text("  $subtitle", style = Txt.meta, color = c.textMuted, maxLines = 1)
+                                }
                             }
                         }
                     },
@@ -342,9 +356,10 @@ fun ChatScreen(contactId: String, onBack: () -> Unit) {
         }
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
-            if (!direct && !onlineUp) {
+            if (!linked) {
                 Text(
-                    "Sin conexion directa ni internet. Los mensajes quedan pendientes y salen solos.",
+                    if (directMode) "Ningun contacto cerca. Los mensajes quedan pendientes y salen al encontrarlo."
+                    else "Sin internet. Los mensajes quedan pendientes y salen solos.",
                     style = Txt.xs, color = c.onDangerContainer,
                     modifier = Modifier.fillMaxWidth().background(c.dangerContainer).padding(Space.s3)
                 )
@@ -371,6 +386,17 @@ fun ChatScreen(contactId: String, onBack: () -> Unit) {
                 }
             }
         }
+    }
+
+    if (pending.isNotEmpty()) {
+        SendPreview(
+            uris = pending, toName = contact?.name ?: "",
+            onCancel = { pending = emptyList() },
+            onSend = { items ->
+                pending = emptyList()
+                scope.launch { items.forEach { (u, cap) -> core.sendFile(contactId, u, cap) } }
+            }
+        )
     }
 
     if (confirmDelete) {

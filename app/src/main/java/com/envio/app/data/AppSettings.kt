@@ -27,6 +27,12 @@ class AppSettings(ctx: Context) {
     var readReceipts by mutableStateOf(p.getBoolean("readReceipts", true))
         private set
 
+    /** internet | direct: por que canal se envia. */
+    var mode by mutableStateOf(p.getString("mode", "internet") ?: "internet")
+        private set
+
+    fun updateMode(v: String) { mode = v; p.edit().putString("mode", v).apply() }
+
     fun updateTheme(v: String) { theme = v; p.edit().putString("theme", v).apply() }
     fun updateFontSize(v: String) { fontSize = v; p.edit().putString("fontSize", v).apply() }
     fun updateEnterIsSend(v: Boolean) { enterIsSend = v; p.edit().putBoolean("enterIsSend", v).apply() }
