@@ -14,6 +14,13 @@ import com.envio.app.ui.AddContactScreen
 import com.envio.app.ui.ChatScreen
 import com.envio.app.ui.ChatsScreen
 import com.envio.app.ui.EnvioTheme
+import com.envio.app.ui.ChatsSettings
+import com.envio.app.ui.NotificationsSettings
+import com.envio.app.ui.PrivacySettings
+import com.envio.app.ui.ProfileSettings
+import com.envio.app.ui.SettingsHome
+import com.envio.app.ui.StarredScreen
+import com.envio.app.ui.StorageSettings
 import com.envio.app.ui.WelcomeScreen
 
 class MainActivity : ComponentActivity() {
@@ -38,9 +45,18 @@ fun AppNav() {
         composable("chats") {
             ChatsScreen(
                 onOpen = { id -> nav.navigate("chat/$id") },
-                onAdd = { nav.navigate("add") }
+                onAdd = { nav.navigate("add") },
+                onStarred = { nav.navigate("starred") },
+                onSettings = { nav.navigate("settings") }
             )
         }
+        composable("starred") { StarredScreen(onBack = { nav.popBackStack() }, onOpen = { id -> nav.navigate("chat/$id") }) }
+        composable("settings") { SettingsHome(onBack = { nav.popBackStack() }, onNav = { nav.navigate(it) }) }
+        composable("settings/profile") { ProfileSettings { nav.popBackStack() } }
+        composable("settings/chats") { ChatsSettings { nav.popBackStack() } }
+        composable("settings/notifications") { NotificationsSettings { nav.popBackStack() } }
+        composable("settings/privacy") { PrivacySettings { nav.popBackStack() } }
+        composable("settings/storage") { StorageSettings { nav.popBackStack() } }
         composable("add") {
             AddContactScreen(
                 onBack = { nav.popBackStack() },

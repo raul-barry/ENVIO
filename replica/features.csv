@@ -1,0 +1,87 @@
+feature,area,priority,original,clone,notes
+Identidad sin numero ni SIM (ID y QR),onboarding,must,no,yes,ENVIO reemplaza el numero de telefono. Ya existe
+Pantalla de bienvenida con permisos,onboarding,must,yes,yes,Ya existe. Se piden una sola vez
+Nombre de perfil,onboarding,must,yes,yes,Ya existe
+Foto de perfil,onboarding,must,yes,no,Falta
+Texto de info del perfil,profile,should,yes,no,
+Lista de chats ordenada por ultimo mensaje,chat list,must,yes,yes,Ya existe
+Pestanas Chats / Estados / Llamadas,navigation,must,yes,no,
+Contador de no leidos en cada chat,chat list,must,yes,no,
+Vista previa del ultimo mensaje con hora,chat list,must,yes,yes,Ya existe
+Busqueda de chats y mensajes,chat list,should,yes,no,
+Filtros Todos / No leidos / Favoritos / Grupos,chat list,could,yes,no,
+Fijar chats arriba,chat list,should,yes,no,
+Archivar chats,chat list,should,yes,no,
+Silenciar chat,chat list,should,yes,no,
+Eliminar chat,chat list,must,yes,no,
+Marcar chat como no leido,chat list,could,yes,no,
+Enviar texto,chat,must,yes,yes,Ya existe
+Burbujas entrantes y salientes con hora,chat,must,yes,yes,Ya existe
+Separadores de fecha,chat,must,yes,no,
+Marcas de envio (enviado / entregado / leido),chat,must,yes,partial,ENVIO tiene Pendiente / Enviado / Entregado. Falta Leido
+Confirmacion de lectura (palomitas azules),privacy,should,yes,no,
+Responder a un mensaje con cita,chat,must,yes,no,
+Reenviar mensaje,chat,should,yes,no,
+Copiar texto,chat,must,yes,no,
+Eliminar mensaje para mi,chat,must,yes,no,
+Eliminar mensaje para todos,chat,should,yes,no,Necesita mensaje de control por ambos canales
+Editar mensaje,chat,could,yes,no,
+Destacar mensajes y lista de destacados,chat,should,yes,no,
+Info del mensaje (entregado y leido),chat,could,yes,no,
+Seleccion multiple de mensajes,chat,should,yes,no,
+Reacciones con emoji,chat,should,yes,no,
+Panel de emojis,chat,must,yes,no,
+Stickers y GIFs,chat,could,yes,no,Catalogo del original fuera de alcance. Stickers propios
+Enviar foto desde la galeria,media,must,yes,yes,Ya existe
+Tomar foto con la camara,media,must,yes,no,
+Enviar video,media,must,yes,partial,Hoy sale como archivo. Falta miniatura y reproductor
+Enviar documento,media,must,yes,yes,Ya existe
+Enviar audio de la galeria,media,should,yes,yes,Ya existe
+Nota de voz con onda y velocidad,media,must,yes,partial,Graba y reproduce. Falta onda pausa y velocidad
+Mantener para grabar / deslizar para cancelar / bloquear,media,should,yes,no,Hoy es tocar para empezar y tocar para enviar
+Visor de imagen a pantalla completa,media,must,yes,no,Hoy se abre con otra app
+Pie de foto al enviar una imagen,media,should,yes,no,
+Enviar ubicacion,media,could,yes,no,
+Enviar contacto,media,could,yes,no,
+Encuestas,media,could,yes,no,
+Vista previa de enlaces,chat,could,yes,no,
+Hoja de adjuntos con iconos,media,must,yes,partial,Hay un menu Adjuntar. Falta la hoja visual
+Indicador escribiendo,presence,should,yes,no,
+Ultima vez y en linea,presence,could,yes,no,
+Agregar contacto,contacts,must,yes,yes,ENVIO usa QR en lugar de numero. Ya existe
+Lista de contactos y nuevo chat,contacts,must,yes,partial,Hay lista de chats y agregar. Falta pantalla de nuevo chat
+Compartir mi QR o enlace de invitacion,contacts,should,yes,partial,Se muestra el QR. Falta compartirlo como enlace o imagen
+Bloquear contacto,contacts,should,yes,no,
+Info del contacto con medios enlaces y documentos,contacts,should,yes,no,
+Crear grupo,groups,must,yes,no,
+Admin de grupo: agregar y quitar miembros,groups,should,yes,no,
+Info y foto del grupo,groups,should,yes,no,
+Mensajes temporales,privacy,could,yes,no,
+Ver una vez,privacy,could,yes,no,
+Bloqueo de la app con huella,privacy,could,yes,no,
+Estados de 24 horas,status,should,yes,no,
+Llamadas de voz,calls,could,yes,no,Necesita servidor de senalizacion
+Videollamadas,calls,could,yes,no,Necesita servidor de senalizacion
+Registro de llamadas,calls,could,yes,no,
+Notificaciones de mensaje,notifications,must,yes,yes,Ya existe
+Responder desde la notificacion,notifications,should,yes,no,
+Ajustes: perfil,settings,must,yes,no,
+Ajustes: chats (fondo tamano de letra Enter envia),settings,should,yes,no,
+Ajustes: notificaciones,settings,should,yes,no,
+Ajustes: privacidad,settings,should,yes,no,
+Ajustes: almacenamiento y datos,settings,should,yes,no,
+Fondo de pantalla del chat,settings,could,yes,no,
+Tema claro y oscuro,settings,should,yes,yes,Sigue al sistema. Ya existe
+Exportar chat,settings,could,yes,no,
+Copia de seguridad local,settings,should,yes,no,Importante: hoy se pierde la identidad al desinstalar
+Cifrado de extremo a extremo,security,must,yes,yes,Ya existe
+Funciona sin internet por Bluetooth y Wi-Fi Direct,transport,must,no,yes,Ventaja propia de ENVIO
+Cola de envio con reintentos y confirmacion,transport,must,no,yes,Ventaja propia de ENVIO
+WhatsApp Web y varios dispositivos,devices,could,yes,skip,Infraestructura del propietario
+Verificacion por SMS y cambio de numero,onboarding,could,yes,skip,Reemplazado por ID y QR
+Sincronizar contactos de la agenda,contacts,could,yes,skip,Depende de numeros de telefono
+Canales,network,could,yes,skip,La red y sus usuarios no se pueden copiar
+Comunidades,network,could,yes,skip,La red y sus usuarios no se pueden copiar
+WhatsApp Business pagos y catalogos,network,could,yes,skip,Servicio del propietario
+Meta AI,network,could,yes,skip,Servicio del propietario
+Copia de seguridad en Google Drive,settings,could,yes,skip,Infraestructura del propietario

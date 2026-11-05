@@ -1,13 +1,18 @@
 package com.envio.app
 
 import android.app.Application
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.room.Room
 import com.envio.app.crypto.Crypto
+import com.envio.app.data.AppSettings
 import com.envio.app.data.Contact
+import com.envio.app.data.ControlItem
 import com.envio.app.data.EnvioDb
 import com.envio.app.data.IdentityStore
+import com.envio.app.data.MIGRATION_1_2
 import com.envio.app.data.Message
 import com.envio.app.net.Envelope
 import com.envio.app.net.NearbyTransport
@@ -20,9 +25,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
+import java.util.Collections
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -33,14 +40,16 @@ import java.util.concurrent.ConcurrentHashMap
  *   2) internet si hay conexion -> ENVIADO, y pasa a ENTREGADO cuando el contacto confirma;
  *      mientras no confirme, se reintenta con espera creciente (hasta 7 dias)
  *   3) si ninguno esta disponible, espera y sale solo cuando aparezca uno.
+ * Cuando el contacto abre el chat, devuelve un mensaje de control "leido" y pasa a LEIDO.
  */
 class Core(val app: Application) {
 
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val db: EnvioDb = Room.databaseBuilder(app, EnvioDb::class.java, "envio.db")
-        .fallbackToDestructiveMigration()
+        .addMigrations(MIGRATION_1_2)
         .build()
     val identity = IdentityStore(app)
+    val settings = AppSettings(app)
     val net = NetworkMonitor(app)
     val nearby = NearbyTransport(app, scope)
     val online = OnlineTransport(app, identity)
@@ -52,8 +61,16 @@ class Core(val app: Application) {
     @Volatile
     private var knownIds: Set<String> = emptySet()
     private val locks = ConcurrentHashMap<String, Mutex>()
-    /** id del mensaje -> [intentos, ultimo intento en ms]. Solo en memoria: al reiniciar se reintenta. */
+
+    /** id del mensaje o control -> [intentos, ultimo intento en ms]. Solo en memoria: al reiniciar se reintenta. */
     private val retryState = ConcurrentHashMap<String, LongArray>()
+
+    /** ids de mensajes de control ya procesados, para poder confirmarlos aunque lleguen repetidos. */
+    private val processedCtrl: MutableSet<String> = Collections.synchronizedSet(
+        Collections.newSetFromMap(object : LinkedHashMap<String, Boolean>() {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean = size > 500
+        })
+    )
     private var started = false
 
     init {
@@ -92,6 +109,7 @@ class Core(val app: Application) {
         if (!started) {
             started = true
             net.start { onNetworkChange() }
+            scope.launch { db.controlDao().purge(System.currentTimeMillis() - DAY_MS) }
         }
         onNetworkChange()
         flush()
@@ -119,9 +137,36 @@ class Core(val app: Application) {
         return c
     }
 
+    // ---------- Perfil propio ----------
+
+    fun saveProfile(name: String, about: String) {
+        identity.setProfile(name, about)
+    }
+
+    suspend fun setProfilePhoto(uri: Uri) = withContext(Dispatchers.IO) {
+        val cr = app.contentResolver
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        while (bounds.outWidth / sample > 1024 || bounds.outHeight / sample > 1024) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        val bmp = cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+            ?: return@withContext
+        val scale = minOf(1f, 512f / maxOf(bmp.width, bmp.height))
+        val out = if (scale < 1f) {
+            Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
+        } else {
+            bmp
+        }
+        val f = File(app.filesDir, "profile_${System.currentTimeMillis()}.jpg")
+        f.outputStream().use { out.compress(Bitmap.CompressFormat.JPEG, 88, it) }
+        identity.photoPath?.let { File(it).delete() }
+        identity.setPhoto(f.absolutePath)
+    }
+
     // ---------- Enviar ----------
 
-    fun sendText(contactId: String, text: String) {
+    fun sendText(contactId: String, text: String, replyTo: Message? = null) {
         val t = text.trim().take(4000)
         if (t.isEmpty()) return
         scope.launch {
@@ -129,11 +174,19 @@ class Core(val app: Application) {
                 Message(
                     id = UUID.randomUUID().toString(), contactId = contactId, outgoing = true,
                     type = "TEXT", text = t, fileName = null, mime = null, filePath = null,
-                    size = 0, ts = System.currentTimeMillis(), status = "PENDING", channel = null
+                    size = 0, ts = System.currentTimeMillis(), status = "PENDING", channel = null,
+                    replyToId = replyTo?.id, replyPreview = replyTo?.let { quotePreview(it) }
                 )
             )
             flush(contactId)
         }
+    }
+
+    private fun quotePreview(m: Message): String = when (m.type) {
+        "TEXT" -> (m.text ?: "").take(120)
+        "IMAGE" -> "Imagen"
+        "AUDIO" -> "Nota de voz"
+        else -> m.fileName ?: "Archivo"
     }
 
     /** Envia cualquier archivo elegido por el usuario (imagen, audio, documento...). */
@@ -180,6 +233,65 @@ class Core(val app: Application) {
         flush(contactId)
     }
 
+    // ---------- Acciones sobre mensajes ----------
+
+    fun setStarred(ids: List<String>, starred: Boolean) {
+        scope.launch { ids.chunked(500).forEach { db.messageDao().setStarred(it, starred) } }
+    }
+
+    /** Elimina solo en este telefono. El otro lado conserva su copia. */
+    fun deleteForMe(ids: List<String>) {
+        scope.launch {
+            ids.chunked(500).forEach { chunk ->
+                db.messageDao().getByIds(chunk).forEach { m ->
+                    val p = m.filePath
+                    if (p != null && p.startsWith(mediaDir.absolutePath)) File(p).delete()
+                }
+                db.messageDao().deleteByIds(chunk)
+            }
+        }
+    }
+
+    /** Marca como leidos los mensajes recibidos y, si esta permitido, avisa al contacto. */
+    suspend fun markRead(chatId: String) {
+        val ids = db.messageDao().unreadIds(chatId)
+        if (ids.isEmpty()) return
+        db.messageDao().markChatRead(chatId, System.currentTimeMillis())
+        db.contactDao().get(chatId)?.let { Notifier.cancel(app, it.name) }
+        if (settings.readReceipts) {
+            ids.chunked(200).forEach { chunk ->
+                enqueueControl(chatId, "read", JSONObject().put("ids", JSONArray(chunk)))
+            }
+        }
+    }
+
+    private suspend fun enqueueControl(toId: String, op: String, payload: JSONObject) {
+        db.controlDao().insert(
+            ControlItem(
+                id = UUID.randomUUID().toString(), toId = toId, op = op,
+                payload = payload.toString(), ts = System.currentTimeMillis(), status = "PENDING"
+            )
+        )
+        flush(toId)
+    }
+
+    // ---------- Almacenamiento ----------
+
+    fun mediaBytes(): Long = mediaDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+
+    fun tempBytes(): Long = app.cacheDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+
+    /** Borra archivos temporales con mas de una hora (no toca lo que se esta enviando ahora). */
+    fun clearTemp(): Long {
+        val limit = System.currentTimeMillis() - 3600_000L
+        var freed = 0L
+        app.cacheDir.walkTopDown().filter { it.isFile && it.lastModified() < limit }.forEach {
+            val n = it.length()
+            if (it.delete()) freed += n
+        }
+        return freed
+    }
+
     // ---------- Cola de envio ----------
 
     fun flush(only: String? = null) {
@@ -188,7 +300,8 @@ class Core(val app: Application) {
             val ids = if (only != null) {
                 listOf(only)
             } else {
-                (db.messageDao().pendingContacts() + db.messageDao().unackedContacts(since)).distinct()
+                (db.messageDao().pendingContacts() + db.messageDao().unackedContacts(since) +
+                    db.controlDao().pendingTargets() + db.controlDao().unackedTargets(since)).distinct()
             }
             ids.forEach { cid ->
                 launch { locks.getOrPut(cid) { Mutex() }.withLock { sendPending(cid) } }
@@ -198,6 +311,7 @@ class Core(val app: Application) {
 
     private suspend fun sendPending(cid: String) {
         val contact = db.contactDao().get(cid) ?: return
+        sendControl(cid, contact)
 
         // 1) mensajes nuevos
         for (m in db.messageDao().pendingFor(cid)) {
@@ -216,11 +330,11 @@ class Core(val app: Application) {
             var done = false
             try {
                 if (viaNearby && nearby.send(cid, env, enc)) {
-                    db.messageDao().setStatus(m.id, "DELIVERED", "NEARBY")
+                    db.messageDao().markDeliveredNearby(m.id, System.currentTimeMillis())
                     done = true
                 }
                 if (!done && viaNet && !tooBigForNet && online.send(env, enc)) {
-                    db.messageDao().setStatus(m.id, "SENT", "INTERNET")
+                    db.messageDao().markSentInternet(m.id)
                     retryState[m.id] = longArrayOf(1L, System.currentTimeMillis())
                     done = true
                 }
@@ -252,6 +366,41 @@ class Core(val app: Application) {
         }
     }
 
+    /** Mensajes de control: mismo camino que los mensajes, sin archivos. */
+    private suspend fun sendControl(cid: String, contact: Contact) {
+        for (c in db.controlDao().pendingFor(cid)) {
+            val viaNearby = nearby.isConnected(cid)
+            val viaNet = net.isOnline() && online.isReady()
+            if (!viaNearby && !viaNet) return
+            val env = try {
+                buildControl(c, contact)
+            } catch (e: Exception) {
+                db.controlDao().setStatus(c.id, "FAILED")
+                continue
+            }
+            if (viaNearby && nearby.send(cid, env, null)) {
+                db.controlDao().setStatus(c.id, "DELIVERED")
+                continue
+            }
+            if (viaNet && online.send(env, null)) {
+                db.controlDao().setStatus(c.id, "SENT")
+                retryState[c.id] = longArrayOf(1L, System.currentTimeMillis())
+                continue
+            }
+            return
+        }
+        if (!(net.isOnline() && online.isReady())) return
+        val now = System.currentTimeMillis()
+        for (c in db.controlDao().unackedFor(cid, now - MAX_RETRY_MS)) {
+            val st = retryState.getOrPut(c.id) { longArrayOf(0L, 0L) }
+            if (now < st[1] + backoff(st[0].toInt(), 0L)) continue
+            val env = try { buildControl(c, contact) } catch (e: Exception) { continue }
+            online.send(env, null)
+            st[0] = st[0] + 1
+            st[1] = System.currentTimeMillis()
+        }
+    }
+
     private fun backoff(attempts: Int, size: Long): Long {
         if (attempts <= 0) return 0L
         val base = if (size > 1_000_000L) 300_000L else 45_000L
@@ -278,6 +427,8 @@ class Core(val app: Application) {
             .put("fileName", m.fileName ?: "")
             .put("mime", m.mime ?: "")
             .put("fileKey", fileKey)
+            .put("replyTo", m.replyToId ?: "")
+            .put("replyPreview", m.replyPreview ?: "")
         val ct = Crypto.encrypt(shared, body.toString().toByteArray(Charsets.UTF_8))
         val env = Envelope(
             id = m.id, from = identity.id, to = contact.id, ts = m.ts, type = m.type,
@@ -286,11 +437,25 @@ class Core(val app: Application) {
         return env to enc
     }
 
+    private fun buildControl(c: ControlItem, contact: Contact): Envelope {
+        val shared = Crypto.sharedKey(identity.privateKey(), Crypto.decodePublic(contact.publicKey))
+        val body = JSONObject().put("op", c.op).put("payload", JSONObject(c.payload))
+        val ct = Crypto.encrypt(shared, body.toString().toByteArray(Charsets.UTF_8))
+        return Envelope(
+            id = c.id, from = identity.id, to = contact.id, ts = c.ts, type = "CTRL",
+            ct = Crypto.b64(ct), spk = identity.publicKeyB64, sname = identity.name
+        )
+    }
+
     // ---------- Confirmaciones de entrega (solo canal internet) ----------
 
     /** Confirmacion cifrada: solo quien tiene la clave compartida puede fabricarla. */
     suspend fun buildAck(env: Envelope): Envelope? {
-        if (db.messageDao().exists(env.id) == 0) return null
+        if (env.type == "CTRL") {
+            if (!processedCtrl.contains(env.id)) return null
+        } else if (db.messageDao().exists(env.id) == 0) {
+            return null
+        }
         val c = db.contactDao().get(env.from) ?: return null
         val shared = Crypto.sharedKey(identity.privateKey(), Crypto.decodePublic(c.publicKey))
         val ct = Crypto.encrypt(shared, "ack:${env.id}".toByteArray(Charsets.UTF_8))
@@ -309,7 +474,8 @@ class Core(val app: Application) {
         } catch (e: Exception) {
             return
         }
-        db.messageDao().markDelivered(env.id, env.from)
+        db.messageDao().markDelivered(env.id, env.from, System.currentTimeMillis())
+        db.controlDao().markDelivered(env.id, env.from)
         retryState.remove(env.id)
     }
 
@@ -318,12 +484,15 @@ class Core(val app: Application) {
     /** True si el sobre ya no hace falta (procesado, duplicado o invalido). */
     suspend fun handleIncoming(env: Envelope, encFile: File?, channel: String): Boolean {
         if (!identity.isSetup || env.to != identity.id) return true
-        if (!Regex("^[0-9a-fA-F-]{36}$").matches(env.id)) return true
+        if (!ID_REGEX.matches(env.id)) return true
         if (!Regex("^[A-Z2-9]{10}$").matches(env.from) || env.from == identity.id) return true
-        if (db.messageDao().exists(env.id) > 0) return true
+        val isCtrl = env.type == "CTRL"
+        if (!isCtrl && db.messageDao().exists(env.id) > 0) return true
 
         var contact = db.contactDao().get(env.from)
+        if (contact != null && contact.blocked) return true
         if (contact != null && contact.publicKey != env.spk) return true // clave distinta: se descarta
+        if (isCtrl && contact == null) return true // solo los contactos pueden mandar control
         if (contact == null) {
             try { Crypto.decodePublic(env.spk) } catch (e: Exception) { return true }
             contact = Contact(env.from, env.sname.ifBlank { env.from }.take(40), env.spk, isNew = true)
@@ -336,6 +505,12 @@ class Core(val app: Application) {
             body = JSONObject(String(plain, Charsets.UTF_8))
         } catch (e: Exception) {
             return true // no descifra: no es de esa persona
+        }
+
+        if (isCtrl) {
+            handleControl(contact, body)
+            processedCtrl.add(env.id)
+            return true
         }
 
         var filePath: String? = null
@@ -361,12 +536,17 @@ class Core(val app: Application) {
             size = dest.length()
         }
 
+        val replyToId = body.optString("replyTo").takeIf { it.isNotBlank() && ID_REGEX.matches(it) }
+        val replyPreview = body.optString("replyPreview").takeIf { it.isNotBlank() }?.take(120)
+
         db.contactDao().upsert(contact)
         db.messageDao().insert(
             Message(
                 id = env.id, contactId = env.from, outgoing = false, type = env.type, text = text,
                 fileName = fileName, mime = mime, filePath = filePath, size = size,
-                ts = System.currentTimeMillis(), status = "RECEIVED", channel = channel
+                ts = minOf(env.ts, System.currentTimeMillis()).coerceAtLeast(1L),
+                status = "RECEIVED", channel = channel,
+                replyToId = replyToId, replyPreview = replyPreview
             )
         )
         if (openChat != env.from) {
@@ -381,10 +561,26 @@ class Core(val app: Application) {
         return true
     }
 
+    private suspend fun handleControl(from: Contact, body: JSONObject) {
+        when (body.optString("op")) {
+            "read" -> {
+                if (!settings.readReceipts) return
+                val arr = body.optJSONObject("payload")?.optJSONArray("ids") ?: return
+                val ids = (0 until minOf(arr.length(), 2000))
+                    .map { arr.optString(it) }
+                    .filter { ID_REGEX.matches(it) }
+                val now = System.currentTimeMillis()
+                ids.chunked(500).forEach { db.messageDao().markReadByRemote(it, from.id, now) }
+            }
+        }
+    }
+
     private fun sanitize(name: String): String =
         name.replace(Regex("[^A-Za-z0-9._ -]"), "_").take(80)
 
     companion object {
         private const val MAX_RETRY_MS = 7L * 24 * 3600_000L
+        private const val DAY_MS = 24L * 3600_000L
+        private val ID_REGEX = Regex("^[0-9a-fA-F-]{36}$")
     }
 }

@@ -25,6 +25,21 @@ class IdentityStore(ctx: Context) {
     val id: String get() = prefs.getString("id", "") ?: ""
     val name: String get() = prefs.getString("name", "") ?: ""
     val publicKeyB64: String get() = prefs.getString("pub", "") ?: ""
+    val about: String get() = prefs.getString("about", "") ?: ""
+    val photoPath: String? get() = prefs.getString("photo", null)
+
+    fun setProfile(name: String, about: String) {
+        prefs.edit()
+            .putString("name", name.trim().take(30).ifBlank { id })
+            .putString("about", about.trim().take(120))
+            .apply()
+    }
+
+    fun setPhoto(path: String?) {
+        val e = prefs.edit()
+        if (path == null) e.remove("photo") else e.putString("photo", path)
+        e.apply()
+    }
 
     fun privateKey(): PrivateKey = Crypto.decodePrivate(prefs.getString("priv", "")!!)
 

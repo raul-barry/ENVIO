@@ -36,7 +36,15 @@ class EnvioApp : Application() {
 val Context.core: Core get() = (applicationContext as EnvioApp).core
 
 object Notifier {
+    fun cancel(ctx: Context, from: String) {
+        try {
+            NotificationManagerCompat.from(ctx).cancel(from.hashCode())
+        } catch (_: Exception) {
+        }
+    }
+
     fun message(ctx: Context, from: String, preview: String) {
+        if (!ctx.core.settings.notifications) return
         try {
             val pi = PendingIntent.getActivity(
                 ctx, 0, Intent(ctx, MainActivity::class.java),
